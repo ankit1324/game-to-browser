@@ -1,0 +1,12 @@
+# Upstream engine clones: each build.sh clones its engine and applies the patch in patches/.
+/prince-of-persia/SDLPoP/
+/endless-sky/endless-sky/
+
+# Build cache and scratch files
+/endless-sky/build/
+.tmp/
+node_modules/
+.DS_Store
+
+# Task briefs for the coding agents, not part of the published project
+BRIEF.md

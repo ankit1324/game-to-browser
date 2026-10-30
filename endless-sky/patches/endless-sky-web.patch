@@ -1,0 +1,842 @@
+diff --git a/source/Files.cpp b/source/Files.cpp
+index 4105100..992361d 100644
+--- a/source/Files.cpp
++++ b/source/Files.cpp
+@@ -16,10 +16,16 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include "Files.h"
+ 
+ #include "Logger.h"
++#ifndef __EMSCRIPTEN__
+ #include "ZipFile.h"
++#endif
+ 
+ #include <SDL2/SDL.h>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#endif
++
+ #include <algorithm>
+ #include <fstream>
+ #include <iostream>
+@@ -63,6 +69,23 @@ namespace {
+ #endif
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// No zip file support needed in the web build; data files are preloaded
++	// into Emscripten's virtual filesystem as loose files.
++	struct ZipFile {
++		vector<filesystem::path> ListFiles(const filesystem::path &, bool, bool) { return {}; }
++		bool Exists(const filesystem::path &) { return false; }
++		string ReadFile(const filesystem::path &) { return {}; }
++	};
++	shared_ptr<ZipFile> GetZipFile(const filesystem::path &) { return {}; }
++
++	// The config directory is an IndexedDB mount (set up by the page's pre.js). Ask the page to
++	// copy the in-memory changes to IndexedDB; Module.syncSaves() coalesces overlapping calls.
++	void SyncConfig()
++	{
++		EM_ASM({ if(Module.syncSaves) Module.syncSaves(); });
++	}
++#else
+ 	/// The open zip files per thread. Since ZLIB doesn't support multithreaded access on the same zip handle,
+ 	/// each file is opened multiple times on demand.
+ 	thread_local map<filesystem::path, shared_ptr<ZipFile>> OPEN_ZIP_FILES;
+@@ -91,6 +114,7 @@ namespace {
+ 
+ 		return {};
+ 	}
++#endif
+ }
+ 
+ 
+@@ -109,6 +133,15 @@ void Files::Init(const char *const *argv)
+ 
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// Web build: resources are preloaded at "/", user files live in the IndexedDB mount "/persist".
++	if(resources.empty())
++		resources = "/";
++	if(config.empty())
++		config = "/persist";
++	if(!Exists(config))
++		filesystem::create_directories(config);
++#else
+ 	if(resources.empty())
+ 	{
+ 		// Find the path to the resource directory. This will depend on the
+@@ -146,11 +179,13 @@ void Files::Init(const char *const *argv)
+ 			throw runtime_error("Unable to find the resource directories!");
+ 		resources = resources.parent_path();
+ 	}
++#endif // __EMSCRIPTEN__
+ 	dataPath = resources / "data";
+ 	imagePath = resources / "images";
+ 	soundPath = resources / "sounds";
+ 	globalPluginPath = resources / "plugins";
+ 
++#ifndef __EMSCRIPTEN__
+ 	if(config.empty())
+ 	{
+ 		// Create the directory for the saved games, preferences, etc., if necessary.
+@@ -165,6 +200,7 @@ void Files::Init(const char *const *argv)
+ 		throw runtime_error("Unable to create config directory!");
+ 
+ 	config = filesystem::canonical(config);
++#endif
+ 
+ 	savePath = config / "saves";
+ 	CreateFolder(savePath);
+@@ -374,6 +410,9 @@ bool Files::Copy(const filesystem::path &from, const filesystem::path &to)
+ 	{
+ 		return false;
+ 	}
++#ifdef __EMSCRIPTEN__
++	SyncConfig();
++#endif
+ 	return true;
+ }
+ 
+@@ -382,6 +421,9 @@ bool Files::Copy(const filesystem::path &from, const filesystem::path &to)
+ void Files::Move(const filesystem::path &from, const filesystem::path &to)
+ {
+ 	rename(from, to);
++#ifdef __EMSCRIPTEN__
++	SyncConfig();
++#endif
+ }
+ 
+ 
+@@ -389,6 +431,9 @@ void Files::Move(const filesystem::path &from, const filesystem::path &to)
+ void Files::Delete(const filesystem::path &filePath)
+ {
+ 	remove_all(filePath);
++#ifdef __EMSCRIPTEN__
++	SyncConfig();
++#endif
+ }
+ 
+ 
+@@ -469,6 +514,10 @@ void Files::Write(shared_ptr<iostream> file, const string &data)
+ 		return;
+ 	*file << data;
+ 	file->flush();
++#ifdef __EMSCRIPTEN__
++	// Every write goes through here (DataWriter, Files::Write(path), errors.txt).
++	SyncConfig();
++#endif
+ }
+ 
+ 
+diff --git a/source/FrameTimer.cpp b/source/FrameTimer.cpp
+index dcdf0e6..c9790d1 100644
+--- a/source/FrameTimer.cpp
++++ b/source/FrameTimer.cpp
+@@ -19,6 +19,8 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #define STRICT
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
++#elif defined(__EMSCRIPTEN__)
++#include <emscripten.h>
+ #else
+ #include <thread>
+ #endif
+@@ -70,6 +72,12 @@ void FrameTimer::Wait()
+ 		// See the thread starting with https://sourceforge.net/p/mingw-w64/mailman/message/37013810/.
+ #ifdef _WIN32
+ 		Sleep(chrono::duration_cast<chrono::milliseconds>(next - now).count());
++#elif defined(__EMSCRIPTEN__)
++		// Without threads, sleep_until() busy-waits and freezes the tab. With Asyncify,
++		// emscripten_sleep() hands control back to the browser for the remaining time.
++		auto ms = chrono::duration_cast<chrono::milliseconds>(next - now).count();
++		if(ms > 0)
++			emscripten_sleep(static_cast<unsigned>(ms));
+ #else
+ 		this_thread::sleep_until(next);
+ #endif
+diff --git a/source/GameWindow.cpp b/source/GameWindow.cpp
+index ddf2d50..c449907 100644
+--- a/source/GameWindow.cpp
++++ b/source/GameWindow.cpp
+@@ -25,6 +25,10 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include "opengl.h"
+ #include <SDL2/SDL.h>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten/html5.h>
++#endif
++
+ #include <cstring>
+ #include <sstream>
+ #include <string>
+@@ -32,9 +36,11 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ using namespace std;
+ 
+ namespace {
++#ifndef __EMSCRIPTEN__
+ 	// The minimal screen resolution requirements.
+ 	constexpr int minWidth = 1024;
+ 	constexpr int minHeight = 768;
++#endif
+ 
+ 	SDL_Window *mainWindow = nullptr;
+ 	SDL_GLContext context = nullptr;
+@@ -118,11 +124,13 @@ bool GameWindow::Init(bool headless)
+ 	// Make the window just slightly smaller than the monitor resolution.
+ 	int maxWidth = mode.w;
+ 	int maxHeight = mode.h;
++#ifndef __EMSCRIPTEN__
+ 	if(maxWidth < minWidth || maxHeight < minHeight)
+ 		Logger::Log("Monitor resolution is too small! Minimal requirement is "
+ 			+ to_string(minWidth) + 'x' + to_string(minHeight)
+ 			+ ", while your resolution is " + to_string(maxWidth) + 'x' + to_string(maxHeight) + '.',
+ 			Logger::Level::WARNING);
++#endif
+ 
+ 	int windowWidth = maxWidth - 100;
+ 	int windowHeight = maxHeight - 100;
+@@ -135,16 +143,32 @@ bool GameWindow::Init(bool headless)
+ 		windowHeight = min(windowHeight, Screen::RawHeight());
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// In the browser the page decides the size: fill the canvas's CSS box. SDL then follows
++	// later CSS size changes on window "resize" events, because the window is resizable.
++	double cssWidth = 0.;
++	double cssHeight = 0.;
++	if(emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight) == EMSCRIPTEN_RESULT_SUCCESS
++			&& cssWidth >= 1. && cssHeight >= 1.)
++	{
++		windowWidth = static_cast<int>(cssWidth);
++		windowHeight = static_cast<int>(cssHeight);
++	}
++#endif
++
+ 	if(!Preferences::Has("Block screen saver"))
+ 		SDL_EnableScreenSaver();
+ 
+ 	// Settings that must be declared before the window creation.
+ 	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+ 
++#ifndef __EMSCRIPTEN__
++	// Browsers only allow fullscreen from a user gesture; the page has a Fullscreen button.
+ 	if(Preferences::ScreenModeSetting() == "fullscreen")
+ 		flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+ 	else if(Preferences::Has("maximized"))
+ 		flags |= SDL_WINDOW_MAXIMIZED;
++#endif
+ 
+ 	// The main window spawns visibly at this point.
+ 	mainWindow = SDL_CreateWindow("Endless Sky", SDL_WINDOWPOS_UNDEFINED,
+@@ -156,6 +180,12 @@ bool GameWindow::Init(bool headless)
+ 		return false;
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// SDL starts with text input on, which stops it from calling preventDefault() on keys like
++	// Space and Tab, so they would scroll the page. Text fields turn it on when needed (Edit.cpp).
++	SDL_StopTextInput();
++#endif
++
+ 	// Bail out early if we are in headless mode; no need to initialize all the OpenGL stuff.
+ 	if(headless)
+ 	{
+@@ -452,6 +482,7 @@ void GameWindow::ToggleBlockScreenSaver()
+ void GameWindow::ExitWithError(const string &message, bool doPopUp)
+ {
+ 	// Print the error message in the terminal and the error file.
++	printf("Error: %s\n", message.c_str());
+ 	Logger::Log(message, Logger::Level::ERROR);
+ 	checkSDLerror();
+ 
+diff --git a/source/PreferencesPanel.cpp b/source/PreferencesPanel.cpp
+index 6bc2050..4b2a3c1 100644
+--- a/source/PreferencesPanel.cpp
++++ b/source/PreferencesPanel.cpp
+@@ -1349,6 +1349,12 @@ void PreferencesPanel::Exit()
+ 	}
+ 
+ 	Command::SaveSettings(Files::Config() / "keys.txt");
++#ifdef __EMSCRIPTEN__
++	// Browser players close the tab instead of quitting, so the save on normal quit in
++	// main() rarely runs. Save now; Files::Write() syncs the files to IndexedDB.
++	Preferences::Save();
++	Plugins::Save();
++#endif
+ 
+ 	if(recacheDeadlines)
+ 		player.CacheMissionInformation(true);
+diff --git a/source/Screen.cpp b/source/Screen.cpp
+index 4f1e632..78999e1 100644
+--- a/source/Screen.cpp
++++ b/source/Screen.cpp
+@@ -100,6 +100,19 @@ void Screen::SetZoom(int percent, bool noEvent)
+ 	minZoom = max(minZoom, 100);
+ 	// Use increments of 10, like the user setting
+ 	minZoom -= minZoom % 10;
++#ifdef __EMSCRIPTEN__
++	// A browser canvas is often smaller than the desktop minimum of 1024x768. At 100% that cuts
++	// off the planet panel ("ui/planet dialog" is 680 tall, and Depart sits at y = +310). So when
++	// the canvas is too small, do go below 100%, in steps of 5, until the main menu (MIN_WIDTH)
++	// and the planet panel fit.
++	static const int WEB_MIN_HEIGHT = 680;
++	if(RAW_WIDTH > 0 && RAW_HEIGHT > 0)
++	{
++		const int fitZoom = min(minZoomX, 100 * RAW_HEIGHT / WEB_MIN_HEIGHT);
++		if(fitZoom < 100)
++			minZoom = max(50, fitZoom - fitZoom % 5);
++	}
++#endif
+ 	EFFECTIVE_ZOOM = min(minZoom, UserZoom());
+ 
+ 	WIDTH = RAW_WIDTH * 100 / EFFECTIVE_ZOOM;
+diff --git a/source/TaskQueue.cpp b/source/TaskQueue.cpp
+index 9695694..e7062b1 100644
+--- a/source/TaskQueue.cpp
++++ b/source/TaskQueue.cpp
+@@ -18,10 +18,12 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include <algorithm>
+ #include <chrono>
+ #include <condition_variable>
++#include <deque>
+ #include <exception>
+ 
+ using namespace std;
+ 
++#ifndef __EMSCRIPTEN__
+ namespace {
+ 
+ 	// The main task queue used by the worker threads.
+@@ -54,11 +56,27 @@ namespace {
+ 		vector<thread> threads;
+ 	} threads;
+ }
++#else
++namespace {
++	// Web build without threads: async tasks of all queues wait in this FIFO and run on the
++	// main thread, a few milliseconds per frame from ProcessSyncTasks(); Wait() runs its own queue's.
++	// This keeps the loading screen animating while thousands of images are decoded.
++	deque<TaskQueue::Task> tasks;
++
++	// At most this much async work per frame (one frame is about 16 ms at 60 FPS)...
++	constexpr chrono::milliseconds ASYNC_BUDGET{10};
++	constexpr chrono::milliseconds FRAME_TIME{16};
++	// ...counted in the current frame-sized time window.
++	chrono::steady_clock::time_point budgetStart;
++	chrono::steady_clock::duration budgetUsed{};
++}
++#endif // !__EMSCRIPTEN__
+ 
+ 
+ 
+ void TaskQueue::SetWorkerThreadCount(uint64_t count)
+ {
++#ifndef __EMSCRIPTEN__
+ 	if(count == 0 || threads.threads.size() == count)
+ 		return;
+ 
+@@ -66,6 +84,8 @@ void TaskQueue::SetWorkerThreadCount(uint64_t count)
+ 	lock_guard<mutex> lock(asyncMutex);
+ 	shouldQuit = false;
+ 	new(&threads) WorkerThreads(count);
++#endif
++	// In Emscripten there is no worker thread pool to resize.
+ }
+ 
+ 
+@@ -84,6 +104,13 @@ TaskQueue::~TaskQueue()
+ // any main thread task that still need to be executed!
+ shared_future<void> TaskQueue::Run(function<void()> asyncTask, function<void()> syncTask)
+ {
++#ifdef __EMSCRIPTEN__
++	// Only queue the task; ProcessSyncTasks() or Wait() runs it later on the main thread.
++	tasks.push_back(Task{this, std::move(asyncTask), std::move(syncTask)});
++	shared_future<void> result = futures.emplace_back(tasks.back().futurePromise.get_future());
++	tasks.back().futureIt = prev(futures.end());
++	return result;
++#else
+ 	shared_future<void> result;
+ 	{
+ 		lock_guard<mutex> lock(asyncMutex);
+@@ -98,6 +125,7 @@ shared_future<void> TaskQueue::Run(function<void()> asyncTask, function<void()>
+ 	}
+ 	asyncCondition.notify_one();
+ 	return result;
++#endif
+ }
+ 
+ 
+@@ -105,6 +133,30 @@ shared_future<void> TaskQueue::Run(function<void()> asyncTask, function<void()>
+ // Process any tasks to be scheduled to be executed on the main thread.
+ void TaskQueue::ProcessSyncTasks()
+ {
++#ifdef __EMSCRIPTEN__
++	// Run pending async tasks (of any queue) until this frame's time budget is spent.
++	// A single task is never interrupted, so one long task can still exceed the budget.
++	chrono::steady_clock::time_point now = chrono::steady_clock::now();
++	if(now - budgetStart >= FRAME_TIME)
++	{
++		budgetStart = now;
++		budgetUsed = {};
++	}
++	while(!tasks.empty() && budgetUsed < ASYNC_BUDGET)
++	{
++		ThreadLoop();
++		chrono::steady_clock::time_point end = chrono::steady_clock::now();
++		budgetUsed += end - now;
++		now = end;
++	}
++
++	for(int i = 0; !syncTasks.empty() && i < MAX_SYNC_TASKS; ++i)
++	{
++		auto task = std::move(syncTasks.front());
++		syncTasks.pop();
++		task();
++	}
++#else
+ 	unique_lock<mutex> lock(syncMutex);
+ 	for(int i = 0; !syncTasks.empty() && i < MAX_SYNC_TASKS; ++i)
+ 	{
+@@ -116,6 +168,7 @@ void TaskQueue::ProcessSyncTasks()
+ 		task();
+ 		lock.lock();
+ 	}
++#endif
+ }
+ 
+ 
+@@ -123,8 +176,26 @@ void TaskQueue::ProcessSyncTasks()
+ // Waits for all of this queue's task to finish. Ignores any sync tasks to be processed.
+ void TaskQueue::Wait()
+ {
++#ifdef __EMSCRIPTEN__
++	// Nobody else will run the tasks: run this queue's tasks now, oldest first. Tasks of other
++	// queues stay queued. (Stop if none is queued, which happens if a task waits on its own queue.)
++	while(!IsDone())
++	{
++		auto it = find_if(tasks.begin(), tasks.end(), [this](const Task &task) { return task.queue == this; });
++		if(it == tasks.end())
++			break;
++		if(it != tasks.begin())
++		{
++			Task task = std::move(*it);
++			tasks.erase(it);
++			tasks.push_front(std::move(task));
++		}
++		ThreadLoop();
++	}
++#else
+ 	while(!IsDone())
+ 		this_thread::yield();
++#endif
+ }
+ 
+ 
+@@ -132,15 +203,38 @@ void TaskQueue::Wait()
+ // Whether there are any outstanding async tasks left in this queue.
+ bool TaskQueue::IsDone() const
+ {
++#ifndef __EMSCRIPTEN__
+ 	lock_guard<mutex> lock(asyncMutex);
++#endif
+ 	return futures.empty();
+ }
+ 
+ 
+ 
+ // Thread entry point.
++// In the web build: run the oldest queued task on the calling (main) thread, like a worker would.
+ void TaskQueue::ThreadLoop() noexcept
+ {
++#ifdef __EMSCRIPTEN__
++	if(tasks.empty())
++		return;
++	Task task = std::move(tasks.front());
++	tasks.pop_front();
++	try {
++		if(task.async)
++			task.async();
++	}
++	catch(...)
++	{
++		// Rethrow the exception in the next ProcessSyncTasks(), as the threaded version does.
++		auto exception = current_exception();
++		task.sync = [exception] { rethrow_exception(exception); };
++	}
++	if(task.sync)
++		task.queue->syncTasks.push(std::move(task.sync));
++	task.futurePromise.set_value();
++	task.queue->futures.erase(task.futureIt);
++#else
+ 	while(true)
+ 	{
+ 		unique_lock<mutex> lock(asyncMutex);
+@@ -193,4 +287,5 @@ void TaskQueue::ThreadLoop() noexcept
+ 
+ 		asyncCondition.wait(lock, [] { return shouldQuit || !tasks.empty(); });
+ 	}
++#endif // !__EMSCRIPTEN__
+ }
+diff --git a/source/audio/Audio.cpp b/source/audio/Audio.cpp
+index aa2df8b..d862f21 100644
+--- a/source/audio/Audio.cpp
++++ b/source/audio/Audio.cpp
+@@ -23,6 +23,9 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include "player/MusicPlayer.h"
+ #include "../Point.h"
+ #include "Sound.h"
++#ifdef __EMSCRIPTEN__
++#include "../TaskQueue.h"
++#endif
+ 
+ #include <AL/al.h>
+ #include <AL/alc.h>
+@@ -61,8 +64,15 @@ namespace {
+ 		player.Move(angle.X() * scale, angle.Y() * scale, -scale);
+ 	}
+ 
++#ifndef __EMSCRIPTEN__
+ 	// Thread entry point for loading the sound files.
+ 	void Load();
++#else
++	// Web build without threads: load one sound per task, so the TaskQueue can spread
++	// the loading over several frames while the loading screen animates.
++	void LoadNext();
++	TaskQueue soundLoadQueue;
++#endif
+ 
+ 
+ 	// Mutex to make sure different threads don't modify the audio at the same time.
+@@ -168,7 +178,13 @@ void Audio::LoadSounds(const vector<filesystem::path> &sources)
+ 	}
+ 	// Begin loading the files.
+ 	if(!loadQueue.empty())
++	{
++#ifdef __EMSCRIPTEN__
++		soundLoadQueue.Run(&LoadNext);
++#else
+ 		loadThread = thread(&Load);
++#endif
++	}
+ }
+ 
+ 
+@@ -280,6 +296,10 @@ void Audio::Play(const Sound *sound, const Point &position, SoundCategory catego
+ // Play the given music. An empty string means to play nothing.
+ void Audio::PlayMusic(const string &name)
+ {
++#ifdef __EMSCRIPTEN__
++	// Music is disabled under Emscripten.
++	return;
++#endif
+ 	if(!isInitialized)
+ 		return;
+ 
+@@ -431,12 +451,14 @@ void Audio::Quit()
+ 	unique_lock<mutex> lock(audioMutex);
+ 	if(!loadQueue.empty())
+ 		loadQueue.clear();
++#ifndef __EMSCRIPTEN__
+ 	if(loadThread.joinable())
+ 	{
+ 		lock.unlock();
+ 		loadThread.join();
+ 		lock.lock();
+ 	}
++#endif
+ 
+ 	// Now, stop and delete any OpenAL sources that are playing.
+ 	players.clear();
+@@ -482,6 +504,40 @@ namespace {
+ 		category = other.category;
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// Load the first sound in the load queue, then queue a task for the next one.
++	void LoadNext()
++	{
++		string key;
++		string name;
++		filesystem::path path;
++		Sound *sound;
++		{
++			unique_lock<mutex> lock(audioMutex);
++			if(loadQueue.empty())
++				return;
++			key = loadQueue.begin()->first;
++			name = key;
++			path = loadQueue.begin()->second;
++			if(name.ends_with("@3x"))
++				name.resize(name.size() - 3);
++			sound = &sounds[name];
++		}
++		if(!sound->Load(path, name))
++			Logger::Log("Unable to load sound \"" + name + "\" from path: " + path.string(),
++				Logger::Level::WARNING);
++		{
++			unique_lock<mutex> lock(audioMutex);
++			// Removing the entry only now signals that it has been loaded (see GetProgress()).
++			loadQueue.erase(key);
++			if(loadQueue.empty())
++				return;
++		}
++		soundLoadQueue.Run(&LoadNext);
++	}
++#endif
++
++#ifndef __EMSCRIPTEN__
+ 	// Thread entry point for loading sounds.
+ 	void Load()
+ 	{
+@@ -517,4 +573,5 @@ namespace {
+ 					Logger::Level::WARNING);
+ 		}
+ 	}
++#endif
+ }
+diff --git a/source/audio/Music.cpp b/source/audio/Music.cpp
+index efa8242..1d9bb58 100644
+--- a/source/audio/Music.cpp
++++ b/source/audio/Music.cpp
+@@ -16,9 +16,11 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include "Music.h"
+ 
+ #include "../Files.h"
++#ifndef __EMSCRIPTEN__
+ #include "supplier/FlacSupplier.h"
+-#include "../text/Format.h"
+ #include "supplier/Mp3Supplier.h"
++#endif
++#include "../text/Format.h"
+ 
+ 
+ #include <map>
+@@ -37,6 +39,9 @@ namespace {
+ 
+ void Music::Init(const vector<filesystem::path> &sources)
+ {
++#ifdef __EMSCRIPTEN__
++	// Music is disabled under Emscripten.
++#else
+ 	for(const auto &source : sources)
+ 	{
+ 		// Find all the sound files that this resource source provides.
+@@ -53,12 +58,17 @@ void Music::Init(const vector<filesystem::path> &sources)
+ 				paths[name] = {path, MusicFileType::FLAC};
+ 		}
+ 	}
++#endif
+ }
+ 
+ 
+ 
+ unique_ptr<AudioSupplier> Music::CreateSupplier(const string &name, bool looping)
+ {
++#ifdef __EMSCRIPTEN__
++	// Music is disabled under Emscripten.
++	return {};
++#else
+ 	if(paths.contains(name))
+ 		switch(paths[name].second)
+ 		{
+@@ -70,4 +80,5 @@ unique_ptr<AudioSupplier> Music::CreateSupplier(const string &name, bool looping
+ 					new FlacSupplier{Files::Open(paths[name].first), looping}};
+ 		}
+ 	return {};
++#endif
+ }
+diff --git a/source/image/ImageBuffer.cpp b/source/image/ImageBuffer.cpp
+index 9d2a90d..6881b15 100644
+--- a/source/image/ImageBuffer.cpp
++++ b/source/image/ImageBuffer.cpp
+@@ -19,7 +19,9 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include "ImageFileData.h"
+ #include "../Logger.h"
+ 
++#ifndef __EMSCRIPTEN__
+ #include <avif/avif.h>
++#endif
+ #include <jpeglib.h>
+ #include <png.h>
+ 
+@@ -34,7 +36,11 @@ using namespace std;
+ namespace {
+ 	const set<string> PNG_EXTENSIONS{".png"};
+ 	const set<string> JPG_EXTENSIONS{".jpg", ".jpeg", ".jpe"};
++#ifdef __EMSCRIPTEN__
++	const set<string> AVIF_EXTENSIONS{};
++#else
+ 	const set<string> AVIF_EXTENSIONS{".avif", ".avifs"};
++#endif
+ 	const set<string> IMAGE_EXTENSIONS = []()
+ 	{
+ 		set<string> extensions(PNG_EXTENSIONS);
+@@ -46,8 +52,10 @@ namespace {
+ 
+ 	bool ReadPNG(const filesystem::path &path, ImageBuffer &buffer, int frame, bool onlyDimensions);
+ 	bool ReadJPG(const filesystem::path &path, ImageBuffer &buffer, int frame, bool onlyDimensions);
++#ifndef __EMSCRIPTEN__
+ 	int ReadAVIF(const filesystem::path &path, ImageBuffer &buffer, int frame, bool alphaPreMultiplied,
+ 		bool onlyDimensions);
++#endif
+ 	void Premultiply(ImageBuffer &buffer, int frame, BlendingMode additive);
+ }
+ 
+@@ -200,7 +208,13 @@ int ImageBuffer::Read(const ImageFileData &data, int frame, bool onlyDimensions)
+ 	else if(isJPG)
+ 		loaded = ReadJPG(data.path, *this, frame, onlyDimensions);
+ 	else
++	{
++#ifndef __EMSCRIPTEN__
+ 		loaded = ReadAVIF(data.path, *this, frame, isAlphaPreMultiplied, onlyDimensions);
++#else
++		return 0;
++#endif
++	}
+ 
+ 	if(loaded <= 0)
+ 		return 0;
+@@ -344,8 +358,15 @@ namespace {
+ #pragma GCC diagnostic pop
+ 
+ 		jpeg_mem_src(&cinfo, reinterpret_cast<const unsigned char *>(data.data()), data.size());
++#ifdef __EMSCRIPTEN__
++		// Emscripten's libjpeg port is IJG libjpeg 9: "boolean" is an enum and there is no
++		// JCS_EXT_RGBA, so decode RGB and widen each row to RGBA below.
++		jpeg_read_header(&cinfo, TRUE);
++		cinfo.out_color_space = JCS_RGB;
++#else
+ 		jpeg_read_header(&cinfo, true);
+ 		cinfo.out_color_space = JCS_EXT_RGBA;
++#endif
+ 
+ 		// MAYBE: Reading in lots of images in a 32-bit process gets really hairy using the standard approach due to
+ 		// contiguous memory layout requirements. Investigate using an iterative loading scheme for large images.
+@@ -387,8 +408,25 @@ namespace {
+ 		for(int y = 0; y < height; ++y)
+ 			rows[y] = reinterpret_cast<JSAMPLE *>(buffer.Begin(y, frame));
+ 
++#ifdef __EMSCRIPTEN__
++		while(cinfo.output_scanline < cinfo.output_height)
++		{
++			JSAMPLE *row = rows[cinfo.output_scanline];
++			if(jpeg_read_scanlines(&cinfo, &row, 1) != 1)
++				break;
++			// Widen RGB to RGBA in place, from the last pixel back so nothing is overwritten early.
++			for(int x = width - 1; x >= 0; --x)
++			{
++				row[4 * x + 3] = 255;
++				row[4 * x + 2] = row[3 * x + 2];
++				row[4 * x + 1] = row[3 * x + 1];
++				row[4 * x] = row[3 * x];
++			}
++		}
++#else
+ 		while(height)
+ 			height -= jpeg_read_scanlines(&cinfo, &rows.front() + cinfo.output_scanline, height);
++#endif
+ 
+ 		jpeg_finish_decompress(&cinfo);
+ 		jpeg_destroy_decompress(&cinfo);
+@@ -398,6 +436,7 @@ namespace {
+ 
+ 
+ 
++#ifndef __EMSCRIPTEN__
+ 	// Read an AVIF file, and return the number of frames. This might be
+ 	// greater than the number of frames in the file due to frame time corrections.
+ 	// Since sprite animation properties are not visible here, we take the shortest frame
+@@ -530,6 +569,7 @@ namespace {
+ 
+ 		return bufferFrameCount;
+ 	}
++#endif // !__EMSCRIPTEN__
+ 
+ 
+ 
+diff --git a/source/main.cpp b/source/main.cpp
+index 0ec37e5..b736f7d 100644
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -64,6 +64,11 @@ this program. If not, see <https://www.gnu.org/licenses/>.
+ #include <exception>
+ #include <string>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include <emscripten/heap.h>
++#endif
++
+ #ifdef _WIN32
+ #define STRICT
+ #define WIN32_LEAN_AND_MEAN
+@@ -92,8 +97,35 @@ void PrintTestsTable();
+ 
+ 
+ 
++#ifdef __EMSCRIPTEN__
++// The web build keeps the runtime alive after main() returns, so Emscripten never reports
++// the exit. Wrap the real entry point and tell the page (Module.onExit) how the game ended.
++static int GameMain(int argc, char *argv[]);
++int main(int argc, char *argv[])
++{
++	int code = 1;
++	try {
++		code = GameMain(argc, argv);
++	}
++	catch(const exception &error)
++	{
++		cerr << "Error: " << error.what() << endl;
++	}
++	catch(...)
++	{
++		cerr << "Error: unknown exception" << endl;
++	}
++	EM_ASM({ if(Module.onExit) Module.onExit($0); }, code);
++	return code;
++}
++
++
++
++static int GameMain(int argc, char *argv[])
++#else
+ // Entry point for the EndlessSky executable
+ int main(int argc, char *argv[])
++#endif
+ {
+ #ifdef _WIN32
+ 	WinVersion::Init();
+@@ -157,6 +189,7 @@ int main(int argc, char *argv[])
+ 	if(nWorkerThreads)
+ 		TaskQueue::SetWorkerThreadCount(nWorkerThreads);
+ 	printData = PrintData::IsPrintDataArgument(argv);
++
+ 	Files::Init(argv);
+ 
+ 	// Whether we are running an integration test.
+@@ -179,7 +212,13 @@ int main(int argc, char *argv[])
+ 		// If we are not using the UI, or performing some automated task, we should load
+ 		// all data now.
+ 		if(isConsoleOnly || checkAssets || isTesting)
++		{
++#ifdef __EMSCRIPTEN__
++			// The single-threaded TaskQueue only runs tasks when asked to.
++			queue.Wait();
++#endif
+ 			dataFuture.wait();
++		}
+ 
+ 		if(isTesting && !GameData::Tests().Has(testToRunName))
+ 		{
+@@ -524,6 +563,9 @@ void GameLoop(PlayerInfo &player, TaskQueue &queue, const Conversation &conversa
+ 					static mach_msg_type_number_t infoSize = MACH_TASK_BASIC_INFO_COUNT;
+ 					task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &infoSize);
+ 					virtualMemoryUse = info.virtual_size;
++#elif defined(__EMSCRIPTEN__)
++					// There is no /proc in the browser; report the WebAssembly heap size instead.
++					virtualMemoryUse = emscripten_get_heap_size();
+ #else
+ 					static string statmStr;
+ 					ifstream statm{"/proc/self/statm"};

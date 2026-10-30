@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0a1f">
+<title>Prince of Persia</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg-deep: #07061a;
+    --bg-indigo: #15113a;
+    --panel: rgba(21, 17, 52, 0.78);
+    --panel-edge: #3d3366;
+    --sand: #eadcb8;
+    --sand-muted: #bfb192;
+    --gold: #f2b84b;
+    --gold-dim: #8f6c2c;
+    --gold-bright: #ffd983;
+    --ink: #120e2b;
+    --danger: #ff9b8a;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --vh: 1vh;
+    --pad: 8px;
+    --bw: 2px;
+    /* Vertical space used by everything except the canvas: header, footer, page padding, frame. */
+    --chrome: 150px;
+  }
+  @supports (height: 100dvh) {
+    :root { --vh: 1dvh; }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html { background: var(--bg-deep); }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    color: var(--sand);
+    font: 15px/1.5 var(--sans);
+    background:
+      radial-gradient(1.5px 1.5px at 8% 12%, rgba(255, 244, 214, 0.55), transparent 60%),
+      radial-gradient(1px 1px at 21% 6%, rgba(255, 244, 214, 0.45), transparent 60%),
+      radial-gradient(1.5px 1.5px at 37% 15%, rgba(255, 244, 214, 0.4), transparent 60%),
+      radial-gradient(1px 1px at 63% 8%, rgba(255, 244, 214, 0.5), transparent 60%),
+      radial-gradient(1.5px 1.5px at 82% 13%, rgba(255, 244, 214, 0.5), transparent 60%),
+      radial-gradient(1px 1px at 94% 5%, rgba(255, 244, 214, 0.4), transparent 60%),
+      radial-gradient(ellipse 80% 60% at 50% 0%, #2b2266 0%, var(--bg-indigo) 45%, var(--bg-deep) 100%);
+    background-color: var(--bg-deep);
+    overflow-x: hidden;
+  }
+  ::selection { background: var(--gold); color: var(--ink); }
+  a { color: var(--gold); text-underline-offset: 2px; }
+  a:hover { color: var(--gold-bright); }
+  :focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 2px; }
+
+  /* ---------- header ---------- */
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 8px 16px 4px;
+  }
+  .top h1 {
+    margin: 0;
+    font: 700 clamp(1.05rem, 0.8rem + 1.2vw, 1.4rem)/1.15 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--gold);
+    text-shadow: 0 0 14px rgba(242, 184, 75, 0.35);
+  }
+  .top .sub {
+    margin: 0;
+    font: 12px/1.3 var(--mono);
+    letter-spacing: 0.06em;
+    color: var(--sand-muted);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 13px/1.2 var(--mono);
+    letter-spacing: 0.04em;
+    color: var(--sand);
+    background: #1e1844;
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--gold); border-color: var(--gold); color: var(--ink); }
+  .btn svg { display: block; }
+
+  .touch-note {
+    display: none;
+    margin: 6px 16px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+    background: rgba(242, 184, 75, 0.1);
+    color: var(--gold-bright);
+    font: 13px/1.4 var(--mono);
+    text-align: center;
+  }
+  @media (pointer: coarse) and (not (any-pointer: fine)) {
+    .touch-note { display: block; }
+  }
+
+  /* ---------- layout ---------- */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: center;
+    align-items: start;
+    gap: 14px 24px;
+    padding: 8px 16px;
+  }
+  @media (min-width: 900px) {
+    main { grid-template-columns: minmax(0, 1fr) 300px; }
+  }
+
+  /* ---------- game frame (the fullscreen target) ---------- */
+  .stage {
+    position: relative;
+    justify-self: center;
+    width: min(100%, max(176px, calc((100 * var(--vh) - var(--chrome)) * 1.6 + 2 * var(--pad) + 2 * var(--bw))));
+    padding: var(--pad);
+    border: var(--bw) solid var(--gold-dim);
+    border-radius: 6px;
+    background: #05040f;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.6),
+      0 0 28px rgba(242, 184, 75, 0.22),
+      0 0 90px rgba(242, 150, 60, 0.12);
+  }
+  .stage:focus-within { border-color: var(--gold); }
+
+  canvas#canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 10;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: none;
+    background: #000;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+  }
+
+  .stage:fullscreen {
+    --pad: 0px;
+    --bw: 0px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    height: 100vh;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #000;
+  }
+  .stage:fullscreen canvas#canvas { width: min(100vw, calc(100vh * 1.6)); }
+  .stage:-webkit-full-screen {
+    --pad: 0px;
+    --bw: 0px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    height: 100vh;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #000;
+  }
+  .stage:-webkit-full-screen canvas#canvas { width: min(100vw, calc(100vh * 1.6)); }
+
+  /* ---------- overlays on top of the canvas ---------- */
+  .overlay {
+    position: absolute;
+    inset: var(--pad);
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px;
+    text-align: center;
+    background: rgba(7, 6, 22, 0.9);
+    color: var(--sand);
+    overflow: auto;
+  }
+  .overlay h2 {
+    margin: 0;
+    font: 700 clamp(1rem, 0.7rem + 1.4vw, 1.5rem)/1.2 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+  .overlay p { margin: 0; }
+
+  .loading { gap: 10px; }
+  .loading .bar {
+    width: min(420px, 82%);
+    height: 14px;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    background: #0d0a24;
+    overflow: hidden;
+  }
+  .loading .fill {
+    width: 0;
+    height: 100%;
+    background: linear-gradient(90deg, #b9822a, var(--gold) 70%, var(--gold-bright));
+  }
+  .loading .pct { font: 700 1.25rem/1 var(--mono); color: var(--gold-bright); }
+  .loading .msg { font: 13px/1.4 var(--mono); color: var(--sand-muted); min-height: 1.4em; }
+
+  .start {
+    cursor: pointer;
+    background: radial-gradient(ellipse at 50% 45%, rgba(60, 40, 90, 0.88), rgba(7, 6, 22, 0.94) 70%);
+  }
+  .start .prompt {
+    font: 700 clamp(0.95rem, 0.6rem + 1.8vw, 1.6rem)/1.3 var(--mono);
+    letter-spacing: 0.08em;
+    color: var(--gold-bright);
+    text-shadow: 0 0 18px rgba(242, 184, 75, 0.5);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .start .prompt { animation: pulse 2.4s ease-in-out infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.75; }
+    }
+  }
+
+  .closed p { color: var(--sand-muted); font: 13px/1.4 var(--mono); }
+
+  .errpanel {
+    position: absolute;
+    left: var(--pad);
+    right: var(--pad);
+    bottom: var(--pad);
+    z-index: 3;
+    max-height: 85%;
+    overflow: auto;
+    padding: 12px 14px;
+    background: #2a0f1c;
+    border: 1px solid var(--danger);
+    border-radius: 4px;
+    color: #ffe6e0;
+  }
+  .errpanel strong { display: block; margin-bottom: 6px; font: 700 14px/1.3 var(--mono); color: var(--danger); letter-spacing: 0.04em; }
+  .errpanel pre {
+    margin: 0 0 10px;
+    font: 12px/1.45 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+  .errpanel .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .errpanel .btn { padding: 5px 10px; font-size: 12px; }
+
+  /* ---------- controls panel ---------- */
+  .controls {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    padding: 2px 14px 8px;
+  }
+  .controls summary {
+    padding: 8px 0 4px;
+    font: 700 13px/1.3 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--gold);
+    cursor: pointer;
+    list-style: none;
+  }
+  .controls summary::-webkit-details-marker { display: none; }
+  .controls summary::before {
+    content: "";
+    display: inline-block;
+    margin-right: 10px;
+    border: 5px solid transparent;
+    border-left: 7px solid var(--gold);
+    border-right-width: 0;
+    vertical-align: -1px;
+  }
+  .controls details[open] > summary::before {
+    border: 5px solid transparent;
+    border-top: 7px solid var(--gold);
+    border-bottom-width: 0;
+    margin-right: 8px;
+  }
+  .controls h3 {
+    margin: 8px 0 2px;
+    padding-bottom: 1px;
+    border-bottom: 1px solid var(--panel-edge);
+    font: 700 12px/1.3 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--sand-muted);
+  }
+  .controls dl { margin: 0; }
+  .controls dl > div {
+    display: grid;
+    grid-template-columns: minmax(0, 8.8em) minmax(0, 1fr);
+    gap: 8px;
+    align-items: baseline;
+    padding: 0.5px 0;
+    font-size: 13px;
+    line-height: 1.25;
+  }
+  .controls dt { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0; font: 12px/1.3 var(--mono); color: var(--sand-muted); }
+  .controls dd { margin: 0; color: var(--sand); }
+  kbd {
+    display: inline-block;
+    padding: 0 4px;
+    font: 600 11.5px/1.25 var(--mono);
+    white-space: nowrap;
+    color: #f7e9c4;
+    background: #251f4d;
+    border: 1px solid #5d5090;
+    border-bottom-width: 2px;
+    border-radius: 3px;
+  }
+  .controls .note { margin: 6px 0 0; font-size: 12.5px; line-height: 1.35; color: var(--sand-muted); }
+  .controls .note.save { color: var(--sand); }
+
+  @media (min-width: 900px) {
+    .controls {
+      max-height: calc(100 * var(--vh) - var(--chrome) + 2 * var(--pad) + 2 * var(--bw));
+      overflow: auto;
+    }
+    .controls summary { pointer-events: none; cursor: default; }
+    .controls summary::before { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    :root { --pad: 4px; --bw: 2px; }
+    main { padding: 8px 10px; }
+    .top { padding: 8px 10px 4px; }
+    .touch-note { margin: 6px 10px 0; }
+  }
+
+  /* ---------- footer ---------- */
+  footer {
+    padding: 6px 16px 10px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--sand-muted);
+  }
+  footer p { margin: 0; }
+</style>
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Prince of Persia</h1>
+      <p class="sub">SDLPoP, compiled to WebAssembly</p>
+    </div>
+    <button type="button" class="btn" id="fsBtn" hidden>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+      Fullscreen
+    </button>
+  </header>
+
+  <p class="touch-note" role="note">Needs a keyboard or a gamepad.</p>
+
+  <main>
+    <div class="stage" id="stage">
+      <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+
+      <div class="overlay loading" id="loading">
+        <h2>Loading</h2>
+        <div class="bar" role="progressbar" aria-label="Loading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar"><div class="fill" id="fill"></div></div>
+        <div class="pct" id="pct">0%</div>
+        <div class="msg" id="msg" role="status">Preparing...</div>
+        <noscript><p>This game needs JavaScript and WebAssembly.</p></noscript>
+      </div>
+
+      <div class="overlay start" id="start" role="dialog" aria-label="Start game" hidden>
+        <p class="prompt">Click or press any key to start</p>
+      </div>
+
+      <div class="overlay closed" id="closed" role="dialog" aria-labelledby="closedTitle" hidden>
+        <h2 id="closedTitle">Game closed</h2>
+        <p id="closedNote">You quit the game.</p>
+        <button type="button" class="btn" id="again">Play again</button>
+      </div>
+
+      <div class="errpanel" id="errors" role="alert" hidden>
+        <strong id="errTitle">Something went wrong</strong>
+        <pre id="errText"></pre>
+        <div class="actions">
+          <button type="button" class="btn" id="errReload">Reload page</button>
+          <button type="button" class="btn" id="errClose">Dismiss</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="controls" aria-label="Controls">
+      <details id="controls" open>
+        <summary id="controlsSummary">Controls</summary>
+
+        <section>
+          <h3>Move</h3>
+          <dl>
+            <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Run or turn</dd></div>
+            <div><dt><kbd>↑</kbd></dt><dd>Jump or climb</dd></div>
+            <div><dt><kbd>↓</kbd></dt><dd>Crouch or climb down</dd></div>
+            <div><dt><kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd></dt><dd>Careful step</dd></div>
+            <div><dt><kbd>↑</kbd> <span>while running</span></dt><dd>Running jump</dd></div>
+            <div><dt><kbd>Shift</kbd></dt><dd>Pick up / grab ledge</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Sword</h3>
+          <dl>
+            <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Advance or retreat</dd></div>
+            <div><dt><kbd>Shift</kbd></dt><dd>Strike</dd></div>
+            <div><dt><kbd>↑</kbd></dt><dd>Block</dd></div>
+            <div><dt><kbd>↓</kbd></dt><dd>Sheathe</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Game</h3>
+          <dl>
+            <div><dt><kbd>Esc</kbd></dt><dd>Pause</dd></div>
+            <div><dt><kbd>Space</kbd></dt><dd>Time left</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>A</kbd></dt><dd>Restart level</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>G</kbd></dt><dd>Save (levels 3-13)</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>L</kbd></dt><dd>Load (on title screen)</dd></div>
+            <div><dt><kbd>F6</kbd></dt><dd>Quicksave</dd></div>
+            <div><dt><kbd>F9</kbd></dt><dd>Quickload</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>Sound on/off</dd></div>
+            <div><dt><kbd>Backspace</kbd></dt><dd>Menu</dd></div>
+            <div><dt><kbd>Alt</kbd>+<kbd>Enter</kbd></dt><dd>Fullscreen</dd></div>
+          </dl>
+        </section>
+
+        <p class="note">Gamepads work too (D-pad, X = Shift, Start = menu).</p>
+        <p class="note save">Saves stay in this browser.</p>
+      </details>
+    </aside>
+  </main>
+
+  <footer>
+    <p>Prince of Persia © 1989 Jordan Mechner / Ubisoft. <a href="https://github.com/NagyD/SDLPoP" target="_blank" rel="noopener noreferrer">SDLPoP</a> by Dávid Nagy and contributors, GPLv3.</p>
+    <p>Unofficial fan port for personal and educational use.</p>
+  </footer>
+
+  <script>
+    var Module = (function () {
+      'use strict';
+
+      function $(id) { return document.getElementById(id); }
+
+      var stage = $('stage');
+      var canvas = $('canvas');
+      var loadingEl = $('loading');
+      var barEl = $('bar');
+      var fillEl = $('fill');
+      var pctEl = $('pct');
+      var msgEl = $('msg');
+      var startEl = $('start');
+      var closedEl = $('closed');
+      var closedNote = $('closedNote');
+      var againBtn = $('again');
+      var errBox = $('errors');
+      var errTitle = $('errTitle');
+      var errText = $('errText');
+
+      var ready = false;
+      var started = false;
+      var aborted = false;
+      var exited = false;
+      var lastStatus = null;
+      var errLines = [];
+
+      /* ---------- loading UI ---------- */
+      function setProgress(percent) {
+        var p = Math.max(0, Math.min(100, percent));
+        fillEl.style.width = p + '%';
+        pctEl.textContent = Math.floor(p) + '%';
+        barEl.setAttribute('aria-valuenow', String(Math.floor(p)));
+      }
+      function setMessage(text) {
+        if (msgEl.textContent !== text) msgEl.textContent = text;
+      }
+      function hideLoading() { loadingEl.hidden = true; }
+
+      /* ---------- errors ---------- */
+      function benign(text) {
+        return /ResizeObserver loop/.test(text) ||
+               /\bunwind\b/.test(text) ||
+               /SimulateInfiniteLoop/.test(text) ||
+               /Program terminated with exit\(/.test(text);
+      }
+      function describe(x) {
+        if (x == null) return '';
+        if (typeof x === 'string') return x;
+        if (x.message) return String(x.message);
+        try { return String(x); } catch (e) { return ''; }
+      }
+      function showError(text, fatal) {
+        text = String(text == null ? '' : text).slice(0, 600);
+        if (!text || errLines.indexOf(text) !== -1) return;
+        if (errLines.length >= 5) errLines.shift();
+        errLines.push(text);
+        errText.textContent = errLines.join('\n\n');
+        if (fatal) errTitle.textContent = 'The game stopped';
+        errBox.hidden = false;
+      }
+      function haltStart() {
+        started = true;
+        window.removeEventListener('keydown', onStartKey, true);
+        if (startEl.parentNode) startEl.remove();
+      }
+
+      /* ---------- start flow ---------- */
+      function start(e) {
+        if (started) return;
+        started = true;
+        e.preventDefault();
+        e.stopPropagation();
+        window.removeEventListener('keydown', onStartKey, true);
+        startEl.remove();
+        try {
+          if (typeof Module.callMain !== 'function') {
+            throw new Error('Module.callMain is not available (callMain must be exported by the build).');
+          }
+          Module.callMain([]);
+        } catch (err) {
+          var text = describe(err);
+          if (!benign(text) && !(typeof err === 'string' && benign(err))) {
+            showError(text || 'The game failed to start.', true);
+          }
+        }
+        Module.canvas.focus();
+      }
+      function onStartKey(e) {
+        // Let browser shortcuts (Cmd/Ctrl+R, Alt+Tab, ...) through instead of starting the game.
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        start(e);
+      }
+
+      /* ---------- fullscreen button ---------- */
+      (function () {
+        var btn = $('fsBtn');
+        var request = stage.requestFullscreen || stage.webkitRequestFullscreen;
+        var enabled = document.fullscreenEnabled || document.webkitFullscreenEnabled;
+        if (!request || !enabled) { btn.hidden = true; return; }
+        btn.hidden = false;
+        btn.addEventListener('click', function () {
+          var active = document.fullscreenElement || document.webkitFullscreenElement;
+          var result;
+          try {
+            if (active) {
+              result = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+            } else {
+              result = request.call(stage);
+            }
+          } catch (err) {
+            console.warn('Fullscreen failed:', err);
+          }
+          if (result && typeof result.catch === 'function') {
+            result.catch(function (err) { console.warn('Fullscreen failed:', err); });
+          }
+          btn.blur();
+        });
+        // SDL resizes the canvas drawing buffer on window 'resize', but misses fullscreen
+        // enter/exit (the canvas keeps its old buffer size). Resend 'resize' once the change is done.
+        function resyncCanvas() {
+          requestAnimationFrame(function () { window.dispatchEvent(new Event('resize')); });
+        }
+        document.addEventListener('fullscreenchange', resyncCanvas);
+        document.addEventListener('webkitfullscreenchange', resyncCanvas);
+      })();
+
+      /* ---------- controls panel: open on wide screens, collapsible on narrow ---------- */
+      (function () {
+        var details = $('controls');
+        var summary = $('controlsSummary');
+        var wide = window.matchMedia('(min-width: 900px)');
+        function sync() {
+          details.open = wide.matches;
+          if (wide.matches) summary.tabIndex = -1; else summary.removeAttribute('tabindex');
+        }
+        sync();
+        if (wide.addEventListener) wide.addEventListener('change', sync);
+        else if (wide.addListener) wide.addListener(sync);
+      })();
+
+      /* ---------- error panel + closed overlay buttons ---------- */
+      $('errReload').addEventListener('click', function (e) { e.currentTarget.blur(); location.reload(); });
+      $('errClose').addEventListener('click', function (e) {
+        e.currentTarget.blur();
+        errBox.hidden = true;
+        errLines = [];
+        errText.textContent = '';
+      });
+      againBtn.addEventListener('click', function () { location.reload(); });
+      startEl.addEventListener('click', start);
+
+      /* ---------- global error routing ---------- */
+      window.onerror = function (message, source, line, col, error) {
+        var text = describe(error) || describe(message);
+        if (benign(text) || benign(describe(message))) return false;
+        if (aborted && /Aborted/.test(text)) return false;
+        if (source && line) text += ' (' + String(source).split('/').pop() + ':' + line + ')';
+        showError(text, false);
+        return false;
+      };
+      window.addEventListener('unhandledrejection', function (event) {
+        var text = describe(event.reason);
+        if (!text || benign(text)) return;
+        if (aborted && /Aborted/.test(text)) return;
+        showError(text, false);
+      });
+
+      /* ---------- the Emscripten Module ---------- */
+      return {
+        canvas: canvas,
+
+        setStatus: function (text) {
+          if (ready || text === lastStatus) return;
+          lastStatus = text;
+          if (!text) { hideLoading(); return; }
+          var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+          if (m) {
+            var loaded = parseFloat(m[2]);
+            var total = parseFloat(m[4]);
+            if (total > 0) setProgress(loaded / total * 100);
+            setMessage(m[1].replace(/\s+$/, ''));
+          } else {
+            setMessage(text);
+          }
+          if (!aborted && !exited) loadingEl.hidden = false;
+        },
+
+        monitorRunDependencies: function (left) {
+          if (left === 0 && !ready) setProgress(100);
+        },
+
+        print: function () { console.log.apply(console, arguments); },
+        printErr: function () { console.warn.apply(console, arguments); },
+
+        onRuntimeInitialized: function () {
+          ready = true;
+          hideLoading();
+          if (aborted || exited || started) return;
+          startEl.hidden = false;
+          window.addEventListener('keydown', onStartKey, true);
+        },
+
+        onAbort: function (what) {
+          aborted = true;
+          hideLoading();
+          haltStart();
+          showError(describe(what) || 'The game aborted.', true);
+        },
+
+        onExit: function (code) {
+          exited = true;
+          hideLoading();
+          haltStart();
+          closedNote.textContent = (code && code !== 0) ? 'The game exited with code ' + code + '.' : 'You quit the game.';
+          closedEl.hidden = false;
+          againBtn.focus();
+        }
+      };
+    })();
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
